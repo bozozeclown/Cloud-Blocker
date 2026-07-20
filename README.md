@@ -4,8 +4,6 @@
 
 A raw, dependency-light PowerShell toolkit for enforcing strict cloud IP firewalls on Windows, hunting unauthorized connections, and integrating deep network reconnaissance via Nmap. 
 
-No fluff. No screen-clearing menus. Just native PowerShell executing sequentially in your terminal.
-
 ## Features
 
 - **Multi-Cloud Firewall Blocking**: Ingests live JSON CIDR lists from AWS, GCP, and Azure, batching them into high-performance Windows Firewall rules.
