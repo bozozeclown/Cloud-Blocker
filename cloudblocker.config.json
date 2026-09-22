@@ -1,0 +1,20 @@
+{
+  "firewallGroup": "CloudBlocker",
+  "batchSize": 1000,
+  "maxCidrsWithoutForce": 5000,
+  "commitGraceSeconds": 300,
+  "guardIntervalMinutes": 10,
+  "trialMinutesDefault": 15,
+  "canaries": [
+    { "ip": "1.1.1.1", "port": 443 },
+    { "ip": "9.9.9.9", "port": 443 },
+    { "ip": "8.8.8.8", "port": 53 }
+  ],
+  "extraExcludeCidrs": [],
+  "providers": {
+    "AWS":     { "enabled": true, "url": "", "note": "Amazon AWS ip-ranges.json (direct)" },
+    "GCP":     { "enabled": true, "url": "", "note": "Google Cloud cloud.json (direct)" },
+    "Azure":   { "enabled": true, "url": "", "note": "Azure Service Tags JSON, auto-resolved from download.microsoft.com" },
+    "Alibaba": { "enabled": false, "url": "", "note": "Alibaba Cloud publishes no stable machine-readable JSON; set url to enable." }
+  }
+}

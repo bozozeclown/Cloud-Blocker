@@ -1,142 +1,124 @@
-﻿## Cloud Blocker & Network Recon Toolkit
+# Cloud Blocker
 
-<img src="Cloud-Block.png" alt="Cloud-Block-Cope" width="500" />
+Block a cloud provider's published IPv4 ranges (AWS / GCP / Azure) at the firewall,
+on **Windows** and **Linux**. Built to be *safe*: a block that would cut the machine
+off the internet is detected by a connectivity canary and reverted automatically, and
+a guard watchdog undoes interrupted applies.
 
-A raw, dependency-light PowerShell toolkit for enforcing strict cloud IP firewalls on Windows, hunting unauthorized connections, and integrating deep network reconnaissance via Nmap. 
+> The original one-shot approach (delete rules → blindly recreate them) could "brick"
+> the PC: blocking all of AWS/Azure/GCP takes out huge parts of the web (CDNs, DNS,
+> launcher backends), and there was no health check or rollback. This version fixes
+> that on both platforms.
 
-## Features
+## Shared safety model
 
-- **Multi-Cloud Firewall Blocking**: Ingests live JSON CIDR lists from AWS, GCP, and Azure, batching them into high-performance Windows Firewall rules.
-- **Automated Scheduled Tasks**: Installs persistent daily tasks to keep blocklists updated automatically.
-- **Native Nmap Integration**: Wraps `nmap.exe` into a PowerShell object API (`Nmap-Helper.ps1`). Captures XML output natively—no regex parsing of raw terminal text.
-- **Pure PS Fallback Scanner**: If Nmap isn't installed, recon scripts automatically fall back to a native .NET TCP connect scanner.
-- **Proxy Enumeration & Routing**: Scan targets *through* HTTP/SOCKS proxies, or scan a target *to see if it is* an open proxy.
-- **Real-Time Wiretap with Auto-Enrichment**: Monitor active TCP connections and automatically Nmap new remote IPs, dumping service/version data sequentially to a CSV.
-- **Firewall Verification**: Uses Nmap to actively prove that installed firewall rules are dropping packets (checking for `filtered` states), not just silently failing.
+1. **Preflight** – wait for a working network, then fetch + sanitise *all* requested
+   providers **before** touching the firewall. A failed download changes nothing.
+2. **Sanitise** – keep valid IPv4 CIDRs `/8`..`/32`; drop private / loopback /
+   link-local / multicast / special-use ranges; dedupe.
+3. **Size guard** – refuse a block larger than `MAX_CIDRS_WITHOUT_FORCE` (default
+   5000) unless forced. (Azure alone is ~45k CIDRs.)
+4. **Atomic apply** – all rules live in one managed group/table, so unblock is a
+   single reliable operation.
+5. **Canary + rollback** – TCP-test `1.1.1.1:443`, `9.9.9.9:443`, `8.8.8.8:53`
+   (none inside AWS/Azure/GCP ranges). If all fail after applying, the block is
+   rolled back automatically.
+6. **Guard** – `pending`/`committed` flags let a watchdog revert an apply that was
+   interrupted (engine killed mid-run) or that left the box offline.
 
-## Prerequisites
-
-1. **Administrator Rights**: Required for Windows Firewall changes, scheduled tasks, and Nmap SYN/OS scans.
-2. **Nmap (Optional but Highly Recommended)**: Download from [nmap.org](https://nmap.org/). The scripts will automatically find it in your `PATH` or default `Program Files` directories. If missing, scripts fall back to basic PS port scanning.
-3. **PowerShell 5.1+** (Run via `powershell.exe`, not `pwsh`).
-
----
-
-## Script Reference & Usage
-
-### Core Firewall Management
-
-#### `Manage-CloudBlocker.ps1`
-The raw CLI entry point for managing your cloud blocklists. Prints ASCII art, gives you a prompt, and executes commands sequentially without wiping your terminal history.
-
-```powershell
-.\Manage-CloudBlocker.ps1
-```
-**Commands:**
-- `1`: Install & Update ALL providers
-- `2`: Install & Update specific provider
-- `3`: Unblock specific provider
-- `4`: Unblock ALL (Nuke)
-- `5`: Verify blocks with nmap
-- `6`: Exit
-
-#### `Block-CloudIPs.ps1`
-The underlying engine. Usually called by the manager, but can be run directly. Fetches IPs, sanitizes them, batches them into firewall rules, and saves state.
-
-```powershell
-.\Block-CloudIPs.ps1 -Provider AWS -Action Block
-.\Block-CloudIPs.ps1 -Provider GCP -Action Unblock
-```
-
-#### `Verify-CloudBlocks.ps1`
-Proves the firewall rules are actually working. Samples IPs from the installed blocklists and runs an Nmap scan against them. If ports show as `filtered`, the block is working. If ports show as `open` or `closed`, your block is leaking.
-
-```powershell
-.\Verify-CloudBlocks.ps1 -Provider AWS -SampleSize 3
-```
+The canary only proves the machine isn't fully cut off. Blocking a whole hyperscaler
+is inherently disruptive for services *hosted* on it — use a **trial block** for
+anything you're unsure about.
 
 ---
 
-### Network Reconnaissance & Nmap Integration
+## Windows
 
-#### `Nmap-Helper.ps1`
-The core API. Dot-sourced by other scripts. Handles Nmap execution, XML parsing, proxy routing, and the pure PowerShell fallback scanner. You don't run this directly, but you can use its functions in your own scripts:
-```powershell
-. .\Nmap-Helper.ps1
-Invoke-Nmap -Targets "10.10.10.5" -ServiceScan -TopPorts 100 -Proxies "http://1.2.3.4:8080"
-```
+Native PowerShell engine + a compiled tray app.
 
-#### `Network-Wiretap.ps1`
-Monitors active TCP connections. When a new remote IP connects, it automatically runs a scan (Nmap or PS fallback) once per IP and logs the open ports to a CSV.
+### Files
 
-```powershell
-.\Network-Wiretap.ps1 -AutoEnrich
-```
-**Outputs:**
-- `NetworkWiretap.csv`: Raw connection logs (Process, PID, IP, Port).
-- `NetworkWiretap-Enriched.csv`: Scan results (RemoteIP, OS, Port, Service, Product, Version).
-- `NetworkWiretap-ScanState.xml`: Tracks scan cooldowns so IPs aren't scanned repeatedly.
+| File | Purpose |
+|---|---|
+| `CloudBlocker.Common.psm1` | Shared helpers (fetch/parse, CIDR safety, firewall group, canary, flags) |
+| `Block-CloudIPs.ps1` | Engine: `-Action Block|Unblock|Verify|Guard` |
+| `Manage-CloudBlocker.ps1` | Interactive manager + scriptable commands |
+| `cloudblocker.config.json` | Canaries, thresholds, providers |
+| `CloudBlockerTray.exe` | Tray-icon front-end (starts at logon) |
+| `CloudBlockerTray.cs`, `app.manifest`, `Build-CloudBlockerTray.ps1` | Tray source + build |
+| `cb.ico` | Icon asset |
 
-#### `Scan-Target.ps1`
-Standalone CLI scanner for ad-hoc target analysis. 
-
-**Basic Scan:**
-```powershell
-.\Scan-Target.ps1 -Target 23.46.189.219 -TopPorts 200 -OsDetect -ConnectScan
-```
-
-**Check if target is an open proxy:**
-Uses Nmap NSE scripts (`http-open-proxy`, `socks-open-proxy`) against common proxy ports.
-```powershell
-.\Scan-Target.ps1 -Target 192.168.1.50 -CheckProxies
-```
-
-**Scan a target THROUGH a proxy chain:**
-Routes the Nmap scan through HTTP/SOCKS proxies.
-```powershell
-.\Scan-Target.ps1 -Target 10.10.10.5 -TopPorts 50 -Proxies "http://1.2.3.4:8080","socks4://5.6.7.8:1080"
-```
-
-#### `Hunt-IPAdess.ps1`
-Sits in a loop waiting for a connection to a specific IP. When detected, it triggers a one-shot Nmap enrichment scan.
+### Usage (elevated)
 
 ```powershell
-.\Hunt-IPAdess.ps1 -TargetIP 172.217.22.174 -EnrichWithNmap
+powershell -ExecutionPolicy Bypass -File .\Manage-CloudBlocker.ps1
+powershell -ExecutionPolicy Bypass -File .\Manage-CloudBlocker.ps1 -Command Status
+powershell -ExecutionPolicy Bypass -File .\Block-CloudIPs.ps1 -Provider GCP -Action Block -TrialMinutes 15
+powershell -ExecutionPolicy Bypass -File .\Block-CloudIPs.ps1 -Provider ALL -Action Unblock
 ```
+
+Tray app: right-click the icon for Status, Block, Trial block, Unblock (incl. PANIC),
+open manager/folder/log, and a **Run at startup** toggle. It requests admin rights and
+is registered to start at logon via the `Cloud Blocker Tray` scheduled task.
+
+Rebuild the tray exe:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Build-CloudBlockerTray.ps1
+```
+
+### Requirements
+
+Windows 10/11 with Windows PowerShell 5.1 and .NET Framework 4.x (present by default).
+Defender exclusions for the AutoClaw install are unrelated to this tool.
 
 ---
 
-### Utilities
+## Linux (Ubuntu / Debian)
 
-#### `Kill-MSTelemetry.ps1`
-Severs Windows telemetry. Blocks the Vortex IP in the firewall, disables the `DiagTrack` service, sets OS telemetry to 'Security Only' via registry, and null-routes telemetry DNS domains in the hosts file.
+nftables-based engine with the same safety model, installed as a `cloudblocker`
+command plus systemd units.
 
-```powershell
-.\Kill-MSTelemetry.ps1
+### Install
+
+```bash
+sudo ./linux/install.sh
 ```
 
-#### `Chunk-PS1Files.ps1`
-Developer utility. Concatenates all `.ps1` files in a directory and splits them into AI-digestible `.txt` chunks (useful for feeding large codebases into LLMs).
+Installs scripts to `/usr/local/lib/cloudblocker/`, config to
+`/etc/cloudblocker/cloudblocker.conf`, a `cloudblocker` command, and systemd units
+(guard timer enabled; daily block timer left disabled).
 
-```powershell
-.\Chunk-PS1Files.ps1
+### Usage
+
+```bash
+sudo cloudblocker block   gcp --trial 15
+sudo cloudblocker block   aws
+sudo cloudblocker block   all --force
+sudo cloudblocker unblock all
+sudo cloudblocker status
+sudo cloudblocker guard
 ```
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `linux/cloudblocker.sh` | Engine: block / unblock / verify / guard |
+| `linux/cloudblocker-common.sh` | Shared library (canary, sanitise, nftables, flags) |
+| `linux/cloudblocker-fetch.py` | Fetches + parses provider ranges (stdlib only) |
+| `linux/cloudblocker.conf` | Canaries, thresholds, provider URLs |
+| `linux/install.sh` | Ubuntu/Debian installer |
+| `linux/systemd/*` | Guard + daily-refresh units |
+
+See `linux/README.md` for details, uninstall, and how the nftables table is built.
 
 ---
 
-## File Structure
+## Notes
 
-Keep all scripts in the same directory. The scripts use `$PSScriptRoot` to locate each other.
-
-```text
-F:\Work\Software\Cloud Blocker\
-├── Manage-CloudBlocker.ps1   # Main CLI entry point
-├── Block-CloudIPs.ps1        # Firewall engine
-├── Verify-CloudBlocks.ps1    # Nmap block verification
-├── Nmap-Helper.ps1           # Shared Nmap/PS scan API
-├── Network-Wiretap.ps1       # Auto-enriching TCP monitor
-├── Scan-Target.ps1           # Proxy-capable ad-hoc scanner
-├── Hunt-IPAdess.ps1          # Targeted IP hunter
-├── Kill-MSTelemetry.ps1      # OS telemetry killer
-└── Chunk-PS1Files.ps1        # Dev utility
-```
+- **Alibaba is not supported/disabled**: Alibaba Cloud publishes no stable
+  machine-readable IP-range JSON, so there is no reliable source URL to parse.
+- Provider endpoints: AWS `ip-ranges.amazonaws.com/ip-ranges.json`, GCP
+  `gstatic.com/ipranges/cloud.json`, Azure Service Tags (auto-resolved).
+- Only IPv4 CIDRs are blocked.

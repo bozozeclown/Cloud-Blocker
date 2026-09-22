@@ -1,0 +1,11 @@
+[Unit]
+Description=Cloud Blocker - block cloud provider ranges (daily refresh)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Edit targets/flags as needed. --force is required to block a whole hyperscaler
+# (more than MAX_CIDRS_WITHOUT_FORCE entries); the canary will auto-rollback a
+# block that cuts connectivity.
+ExecStart=/usr/local/bin/cloudblocker block all --force

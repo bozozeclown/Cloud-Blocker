@@ -1,0 +1,6 @@
+[Unit]
+Description=Cloud Blocker guard (revert interrupted or unsafe block applies)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cloudblocker guard
